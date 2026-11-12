@@ -1,9 +1,11 @@
+// ไฟล์เต็ม: ก๊อบไปทับ lib/main.dart ได้ทั้งไฟล์
+// (หน้าจอทดสอบตรวจสอบกล้องเท่านั้น แนะนำให้สำรอง main.dart เดิมไว้ก่อน)
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-void main() {
-  runApp(const PhotoUploaderApp());
-}
+import 'usb_camera_service.dart';
+
+void main() => runApp(const PhotoUploaderApp());
 
 class PhotoUploaderApp extends StatelessWidget {
   const PhotoUploaderApp({super.key});
@@ -12,66 +14,102 @@ class PhotoUploaderApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Photo Uploader',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const HomeScreen(),
+      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      home: const CameraCheckPage(),
     );
   }
 }
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class CameraCheckPage extends StatefulWidget {
+  const CameraCheckPage({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<CameraCheckPage> createState() => _CameraCheckPageState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  static const platform = MethodChannel('com.example.photo_uploader_app/usb');
-  String _deviceStatus = 'กำลังตรวจสอบการเชื่อมต่อกล้อง...';
+class _CameraCheckPageState extends State<CameraCheckPage> {
+  String _log = 'เสียบกล้องแล้วกดปุ่ม "ตรวจสอบกล้อง"';
+  bool _busy = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _checkUsbDevice();
-  }
+  Future<void> _check() async {
+    setState(() {
+      _busy = true;
+      _log = 'กำลังตรวจสอบ...';
+    });
 
-  Future<void> _checkUsbDevice() async {
+    final buf = StringBuffer();
     try {
-      final String result = await platform.invokeMethod('getConnectedCamera');
-      setState(() {
-        _deviceStatus = result;
-      });
+      final devices = await UsbCameraService.listDevices();
+      buf.writeln('พบอุปกรณ์ USB ทั้งหมด: ${devices.length} ตัว');
+      buf.writeln();
+
+      for (final d in devices) {
+        buf.writeln('• ${d['manufacturerName']} ${d['productName']}');
+        buf.writeln('  deviceName: ${d['deviceName']}');
+        buf.writeln('  vendorId: ${d['vendorId']}  productId: ${d['productId']}');
+        buf.writeln('  interfaceClasses: ${d['interfaceClasses']}');
+        buf.writeln('  isCamera: ${d['isCamera']}  hasPermission: ${d['hasPermission']}');
+        buf.writeln();
+      }
+
+      final camera = await UsbCameraService.findCamera();
+      if (camera == null) {
+        buf.writeln('❌ ไม่พบกล้อง');
+        buf.writeln('ถ้าจำนวนอุปกรณ์เป็น 0 แปลว่าโทรศัพท์ไม่เห็นกล้องเลย');
+        buf.writeln('ให้เช็กสาย / หัว OTG / เปิดกล้อง / ปิด Wi-Fi ของกล้อง');
+      } else {
+        buf.writeln('✅ พบกล้อง: ${camera['productName']}');
+        if (camera['hasPermission'] == true) {
+          buf.writeln('✅ แอพมีสิทธิ์ใช้กล้องแล้ว');
+        } else {
+          final granted = await UsbCameraService.requestPermission(
+            camera['deviceName'] as String,
+          );
+          buf.writeln(
+            granted
+                ? '✅ ได้รับสิทธิ์ใช้กล้องแล้ว'
+                : '❌ ไม่ได้รับสิทธิ์ (กดไม่อนุญาต หรือ popup ไม่ขึ้น)',
+          );
+        }
+      }
     } on PlatformException catch (e) {
-      setState(() {
-        _deviceStatus = "เกิดข้อผิดพลาด: '${e.message}'.";
-      });
+      buf.writeln('❌ PlatformException: ${e.code}');
+      buf.writeln('${e.message}');
+    } catch (e) {
+      buf.writeln('❌ เกิดข้อผิดพลาด: $e');
     }
+
+    if (!mounted) return;
+    setState(() {
+      _log = buf.toString();
+      _busy = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Auto Photo Uploader'),
-      ),
-      body: Center(
+      appBar: AppBar(title: const Text('ตรวจสอบกล้อง')),
+      body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24.0),
+          padding: const EdgeInsets.all(16),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.camera_alt, size: 64, color: Colors.blue),
-              const SizedBox(height: 20),
-              Text(
-                _deviceStatus,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+              FilledButton.icon(
+                onPressed: _busy ? null : _check,
+                icon: const Icon(Icons.usb),
+                label: Text(_busy ? 'กำลังตรวจสอบ...' : 'ตรวจสอบกล้อง'),
               ),
-              const SizedBox(height: 30),
-              ElevatedButton.icon(
-                onPressed: _checkUsbDevice,
-                icon: const Icon(Icons.refresh),
-                label: const Text('ตรวจสอบสถานะกล้องอีกครั้ง'),
+              const SizedBox(height: 16),
+              Expanded(
+                child: SingleChildScrollView(
+                  // กดค้างเพื่อคัดลอกข้อความไปส่งให้ดูได้
+                  child: SelectableText(
+                    _log,
+                    style: const TextStyle(fontSize: 14, height: 1.4),
+                  ),
+                ),
               ),
             ],
           ),
